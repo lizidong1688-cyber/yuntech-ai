@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { getAllShowcases } from "@/lib/showcases";
+import { getAllProducts } from "@/lib/products";
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL || "https://yunchuangweilai.com";
@@ -16,28 +17,28 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
-      url: `${SITE_URL}/showcases`,
+      url: `${SITE_URL}/shop`,
       lastModified: now,
       changeFrequency: "weekly",
       priority: 0.95,
     },
     {
-      url: `${SITE_URL}/#services`,
-      lastModified: now,
-      changeFrequency: "monthly",
-      priority: 0.9,
-    },
-    {
-      url: `${SITE_URL}/#generator`,
+      url: `${SITE_URL}/showcases`,
       lastModified: now,
       changeFrequency: "weekly",
       priority: 0.9,
     },
     {
-      url: `${SITE_URL}/#pricing`,
+      url: `${SITE_URL}/#services`,
       lastModified: now,
       changeFrequency: "monthly",
       priority: 0.8,
+    },
+    {
+      url: `${SITE_URL}/#generator`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.85,
     },
     {
       url: `${SITE_URL}/#contact`,
@@ -47,7 +48,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
   ];
 
-  // 每个案例一个独立URL（SEO核心资产）
+  // 商品详情页（电商SEO核心）
+  const productPages: MetadataRoute.Sitemap = getAllProducts().map((p) => ({
+    url: `${SITE_URL}/shop/${p.slug}`,
+    lastModified: now,
+    changeFrequency: "weekly",
+    priority: p.highlight ? 0.9 : 0.8,
+  }));
+
+  // 案例SEO页
   const showcasePages: MetadataRoute.Sitemap = getAllShowcases().map((s) => ({
     url: `${SITE_URL}/showcase/${s.slug}`,
     lastModified: new Date(s.publishedAt),
@@ -55,5 +64,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: s.featured ? 0.85 : 0.75,
   }));
 
-  return [...corePages, ...showcasePages];
+  return [...corePages, ...productPages, ...showcasePages];
 }

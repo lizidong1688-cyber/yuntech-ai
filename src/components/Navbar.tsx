@@ -3,10 +3,10 @@
 import { useState } from "react";
 
 const navLinks = [
-  { label: "商品", href: "/shop", highlight: true },
+  { label: "AI漫剧", href: "/manhua", highlight: true },
+  { label: "商品", href: "/shop" },
   { label: "案例库", href: "/showcases" },
   { label: "免费工具", href: "/#generator" },
-  { label: "服务", href: "/#services" },
   { label: "关于", href: "/#about" },
 ];
 

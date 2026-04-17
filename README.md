@@ -3,6 +3,18 @@
 > 海口云创未来科技有限公司官方业务平台
 > 基于 Next.js 16 + React 19 + Tailwind CSS 4 构建
 
+## 🚀 一键部署上线
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Flizidong1688-cyber%2Fyuntech-ai&env=ADMIN_TOKEN,NEXT_PUBLIC_SITE_URL&envDescription=%E5%BF%85%E9%A1%BB%E8%AE%BE%E7%BD%AE%E7%9A%84%E4%B8%A4%E4%B8%AA%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F&project-name=yuntech-ai&repository-name=yuntech-ai)
+
+点击上方按钮 → 登录Vercel（可用GitHub一键登录）→ 填入2个环境变量 → 部署完成
+
+部署只需 **2分钟**，完全免费。部署后您将获得：
+- 一个 `xxx.vercel.app` 的公网URL
+- 所有20个案例SEO页全部上线
+- HTTPS、CDN、自动构建全部就绪
+- 支持绑定自定义域名
+
 ## 这是什么
 
 一个**面向商业转化**的完整AI内容生产服务平台，具备：

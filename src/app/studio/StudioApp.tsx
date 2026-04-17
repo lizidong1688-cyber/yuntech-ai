@@ -167,17 +167,26 @@ export default function StudioApp() {
 
             {/* 中间：镜头序列 */}
             <section>
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <h2 className="text-sm font-semibold">
                   镜头序列 · {project.shots.length} 个镜头 · 总 {totalDur.toFixed(1)}s
                 </h2>
-                <button
-                  type="button"
-                  onClick={addShot}
-                  className="px-4 py-1.5 text-sm rounded-lg bg-accent/20 hover:bg-accent/30 text-accent-light transition-colors"
-                >
-                  + 添加镜头
-                </button>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href="/storyboard"
+                    className="px-4 py-1.5 text-sm rounded-lg bg-gradient-to-r from-accent to-purple-600 hover:from-accent-light hover:to-purple-500 text-white font-medium transition-all"
+                    onClick={() => saveProject(project)}
+                  >
+                    🎬 查看分镜板
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={addShot}
+                    className="px-4 py-1.5 text-sm rounded-lg bg-accent/20 hover:bg-accent/30 text-accent-light transition-colors"
+                  >
+                    + 添加镜头
+                  </button>
+                </div>
               </div>
               <div className="space-y-3">
                 {project.shots.map((shot, idx) => (
@@ -185,6 +194,7 @@ export default function StudioApp() {
                     key={shot.id}
                     shot={shot}
                     index={idx}
+                    project={project}
                     onChange={(s) => updateShot(idx, s)}
                     onDelete={() => deleteShot(idx)}
                     onMoveUp={() => moveShot(idx, "up")}

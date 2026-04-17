@@ -14,20 +14,20 @@ export default function Hero() {
       <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface-light/50 border border-border/50 text-sm text-gray-300 mb-8">
           <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-          全新上线 · AI提示词工作室
+          真实AI生成预览 · 永久免费
         </div>
 
         <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold tracking-tight mb-6">
-          <span className="block">AI视频创作者</span>
+          <span className="block">写Prompt的同时</span>
           <span className="block bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent animate-gradient-x">
-            的专业工作台
+            立刻看到AI效果
           </span>
         </h1>
 
         <p className="max-w-2xl mx-auto text-lg sm:text-xl text-gray-300 mb-10 leading-relaxed">
-          可视化提示词编辑、多AI平台一键导出、历史版本管理
+          可视化镜头编辑 · <strong className="text-white">2秒真实AI图像预览</strong> · 6+平台Prompt导出
           <br className="hidden sm:block" />
-          <strong className="text-white">永久免费使用</strong>核心功能，浏览器即用无需登录
+          传统分镜师¥2000-5000 · 我们<strong className="text-white">30秒¥0</strong>
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -35,7 +35,7 @@ export default function Hero() {
             href="/studio"
             className="w-full sm:w-auto px-8 py-4 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-400 hover:to-purple-500 text-white font-semibold text-lg transition-all shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40"
           >
-            打开工作室 →
+            免费开始创作 →
           </Link>
           <Link
             href="/shop"

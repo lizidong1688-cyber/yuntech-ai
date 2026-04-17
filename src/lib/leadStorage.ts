@@ -43,13 +43,24 @@ export interface LeadRecord extends LeadInput {
 }
 
 // ============================================================
-// 存储实现
+// 存储实现（兼容本地文件系统 + Serverless只读环境）
 // ============================================================
 
 const DATA_DIR = path.join(process.cwd(), ".data");
 const LEADS_FILE = path.join(DATA_DIR, "leads.json");
 
+// Vercel等serverless环境的标志（文件系统只读）
+const IS_READONLY_FS =
+  process.env.VERCEL === "1" ||
+  process.env.NETLIFY === "true" ||
+  process.env.LAMBDA_TASK_ROOT !== undefined;
+
+// 进程内存储（serverless场景下的临时存储，函数冷启动后会丢失）
+// 生产环境建议升级为Vercel KV / Postgres / Supabase
+let memoryStore: LeadRecord[] = [];
+
 async function ensureFile(): Promise<void> {
+  if (IS_READONLY_FS) return; // serverless环境跳过文件操作
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
     await fs.access(LEADS_FILE);
@@ -59,6 +70,7 @@ async function ensureFile(): Promise<void> {
 }
 
 async function readAll(): Promise<LeadRecord[]> {
+  if (IS_READONLY_FS) return memoryStore;
   await ensureFile();
   try {
     const raw = await fs.readFile(LEADS_FILE, "utf-8");
@@ -70,6 +82,10 @@ async function readAll(): Promise<LeadRecord[]> {
 }
 
 async function writeAll(leads: LeadRecord[]): Promise<void> {
+  if (IS_READONLY_FS) {
+    memoryStore = leads;
+    return;
+  }
   await ensureFile();
   await fs.writeFile(LEADS_FILE, JSON.stringify(leads, null, 2), "utf-8");
 }

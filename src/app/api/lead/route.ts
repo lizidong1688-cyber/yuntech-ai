@@ -40,16 +40,11 @@ export async function POST(req: NextRequest) {
 
     const record = await saveLead(validation.data, { ip, userAgent });
 
-    // 开发环境打印日志，方便第一时间看到新线索
-    if (process.env.NODE_ENV !== "production") {
-      console.log(
-        `\n🎯 [新线索] ${new Date().toLocaleString("zh-CN")}\n` +
-          `   来源：${record.source}\n` +
-          `   手机：${record.phone || "-"}\n` +
-          `   微信：${record.wechat || "-"}\n` +
-          `   需求：${record.need || record.detail || record.theme || "-"}\n`
-      );
-    }
+    // 打印到日志（Vercel/Netlify等serverless环境文件系统只读，日志是主要保留方式）
+    // 访问 Vercel Dashboard → 项目 → Logs 可以看到所有线索
+    console.log(
+      `🎯 [LEAD] ${new Date().toISOString()} | source=${record.source} | phone=${record.phone || "-"} | wechat=${record.wechat || "-"} | need=${record.need || "-"} | theme=${record.theme || "-"} | detail=${record.detail?.slice(0, 200) || "-"}`
+    );
 
     return NextResponse.json({ ok: true, id: record.id });
   } catch (err) {

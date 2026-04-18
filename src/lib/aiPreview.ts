@@ -9,7 +9,8 @@
 import type { Shot, StudioProject } from "./studio";
 import { PALETTE_META, LIGHT_META, SHOT_SIZE_META, CAMERA_MOVE_META } from "./studio";
 
-const POLLINATIONS_BASE = "https://image.pollinations.ai/prompt";
+// 通过自家代理调用（绕过Pollinations对浏览器的限流）
+const PROXY_BASE = "/api/ai-image";
 
 export interface PreviewSize {
   width: number;
@@ -102,14 +103,13 @@ export function buildPreviewUrl(
     ) % 1000000;
 
   const params = new URLSearchParams({
+    prompt,
     width: String(size.width),
     height: String(size.height),
     seed: String(seed),
-    nologo: "true",
-    enhance: options?.enhance ? "true" : "false",
   });
 
-  return `${POLLINATIONS_BASE}/${encodeURIComponent(prompt)}?${params}`;
+  return `${PROXY_BASE}?${params}`;
 }
 
 export function canPreview(shot: Shot): boolean {
@@ -185,16 +185,16 @@ class ImageQueue {
     while (this.queue.length > 0) {
       const task = this.queue[0];
       try {
-        const blobUrl = await fetchWithRetry(task.url);
-        task.resolve(blobUrl);
+        const resultUrl = await loadImageWithRetry(task.url);
+        task.resolve(resultUrl);
       } catch (err) {
         task.reject(err as Error);
       }
       this.queue.shift();
       this.notify();
-      // 两个请求之间强制间隔 500ms，更稳
+      // 两个请求之间强制间隔 1.5秒，避开限流
       if (this.queue.length > 0) {
-        await sleep(500);
+        await sleep(1500);
       }
     }
 
@@ -211,40 +211,54 @@ export interface QueueStatus {
 
 export const imageQueue = new ImageQueue();
 
-async function fetchWithRetry(
+/**
+ * 用 <img> 标签加载图片（而非fetch）
+ * 原因：Pollinations对带User-Agent+Referer的fetch请求严格限流
+ * <img src> 绕开了这个限制
+ *
+ * 返回原始URL本身（浏览器已缓存），配合seed换图用
+ */
+async function loadImageWithRetry(
   url: string,
   attempts = 3
 ): Promise<string> {
   let lastErr: Error | null = null;
   for (let i = 0; i < attempts; i++) {
     try {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 40_000);
-      try {
-        const res = await fetch(url, { signal: ctrl.signal, cache: "default" });
-        if (res.status === 200) {
-          const blob = await res.blob();
-          if (blob.size > 5000 && blob.type.startsWith("image/")) {
-            return URL.createObjectURL(blob);
-          }
-          throw new Error(`response不是图片: type=${blob.type}, size=${blob.size}`);
-        }
-        if (res.status === 429) {
-          throw new Error("AI服务繁忙（429）");
-        }
-        throw new Error(`HTTP ${res.status}`);
-      } finally {
-        clearTimeout(timeout);
-      }
+      await loadImage(url);
+      return url; // 直接返回URL，UI可用于<img src>
     } catch (err) {
       lastErr = err as Error;
-      // 每次失败等更久
       if (i < attempts - 1) {
         await sleep(1500 * (i + 1));
       }
     }
   }
-  throw lastErr || new Error("生成失败");
+  throw lastErr || new Error("AI生成超时或失败");
+}
+
+function loadImage(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const timeout = setTimeout(() => {
+      img.src = "";
+      reject(new Error("超时（>45秒）"));
+    }, 45_000);
+    img.onload = () => {
+      clearTimeout(timeout);
+      // 判断图片是否有效（429 响应体虽小但浏览器也可能当图加载失败）
+      if (img.naturalWidth < 50 || img.naturalHeight < 50) {
+        reject(new Error("返回无效图像（可能被限流）"));
+      } else {
+        resolve();
+      }
+    };
+    img.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("加载失败"));
+    };
+    img.src = url;
+  });
 }
 
 function sleep(ms: number): Promise<void> {

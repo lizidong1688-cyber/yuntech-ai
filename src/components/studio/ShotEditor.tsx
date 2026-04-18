@@ -31,7 +31,7 @@ type PreviewState =
   | { kind: "idle" }
   | { kind: "queued" }
   | { kind: "loading" }
-  | { kind: "ready"; blobUrl: string }
+  | { kind: "ready"; imageUrl: string }
   | { kind: "error"; message: string };
 
 export default function ShotEditor({
@@ -54,9 +54,6 @@ export default function ShotEditor({
   useEffect(() => {
     return () => {
       imageQueue.cancel(shot.id);
-      if (preview.kind === "ready") {
-        URL.revokeObjectURL(preview.blobUrl);
-      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -67,27 +64,18 @@ export default function ShotEditor({
 
   const generate = useCallback(async () => {
     if (!ready) return;
-    // 释放旧blob
-    if (preview.kind === "ready") {
-      URL.revokeObjectURL(preview.blobUrl);
-    }
-    // 先入队
     setPreview({ kind: "queued" });
     const seed = Math.floor(Math.random() * 1_000_000);
     const url = buildPreviewUrl(shot, project, { seed });
     try {
-      // 进入队列，队列开始处理时状态转 loading
-      const start = Date.now();
-      const blobUrl = await imageQueue.enqueue(shot.id, url);
-      // 如果取到结果用时很短，说明已经是loading了；无关紧要
-      void start;
-      setPreview({ kind: "ready", blobUrl });
+      const imageUrl = await imageQueue.enqueue(shot.id, url);
+      setPreview({ kind: "ready", imageUrl });
     } catch (err) {
       const msg = (err as Error).message || "生成失败";
       if (msg === "cancelled" || msg === "cleared") return;
       setPreview({ kind: "error", message: msg });
     }
-  }, [ready, shot, project, preview]);
+  }, [ready, shot, project]);
 
   // 订阅队列状态，更新 loading 态
   useEffect(() => {
@@ -362,16 +350,17 @@ function PreviewBox({
     <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-surface-light border border-border/50 group">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={state.blobUrl}
+        src={state.imageUrl}
         alt="AI预览"
         className="w-full h-full object-cover"
       />
       <a
-        href={state.blobUrl}
-        download="yuntech-ai-preview.jpg"
+        href={state.imageUrl}
+        target="_blank"
+        rel="noopener noreferrer"
         className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100"
       >
-        ↓ 保存
+        ↓ 原图
       </a>
     </div>
   );

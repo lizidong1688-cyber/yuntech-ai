@@ -16,7 +16,7 @@ type ShotStatus =
   | { kind: "idle" }
   | { kind: "queued" }
   | { kind: "loading" }
-  | { kind: "ready"; blobUrl: string }
+  | { kind: "ready"; imageUrl: string }
   | { kind: "error"; message: string };
 
 export default function StoryboardApp() {
@@ -36,9 +36,7 @@ export default function StoryboardApp() {
   useEffect(() => {
     return () => {
       imageQueue.clear();
-      Object.values(statusMap).forEach((s) => {
-        if (s.kind === "ready") URL.revokeObjectURL(s.blobUrl);
-      });
+      // URL是直接图片URL，无需释放
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -56,10 +54,7 @@ export default function StoryboardApp() {
     const shots = project.shots.filter(canPreview);
     if (shots.length === 0) return;
 
-    // 释放旧blob
-    Object.values(statusMap).forEach((s) => {
-      if (s.kind === "ready") URL.revokeObjectURL(s.blobUrl);
-    });
+    // 直接URL无需释放
 
     const thisRunId = Date.now();
     runIdRef.current = thisRunId;
@@ -85,11 +80,11 @@ export default function StoryboardApp() {
       const url = buildPreviewUrl(shot, project, { seed });
 
       try {
-        const blobUrl = await imageQueue.enqueue(shot.id, url);
+        const imageUrl = await imageQueue.enqueue(shot.id, url);
         if (runIdRef.current !== thisRunId) break;
         setStatusMap((prev) => ({
           ...prev,
-          [shot.id]: { kind: "ready", blobUrl },
+          [shot.id]: { kind: "ready", imageUrl },
         }));
       } catch (err) {
         if (runIdRef.current !== thisRunId) break;
@@ -115,10 +110,10 @@ export default function StoryboardApp() {
       const seed = Math.floor(Math.random() * 1_000_000);
       const url = buildPreviewUrl(shot, project, { seed });
       try {
-        const blobUrl = await imageQueue.enqueue(shot.id, url);
+        const imageUrl = await imageQueue.enqueue(shot.id, url);
         setStatusMap((prev) => ({
           ...prev,
-          [shot.id]: { kind: "ready", blobUrl },
+          [shot.id]: { kind: "ready", imageUrl },
         }));
       } catch (err) {
         const msg = (err as Error).message || "生成失败";
@@ -139,9 +134,7 @@ export default function StoryboardApp() {
       runIdRef.current = 0;
       imageQueue.clear();
       // 释放blob
-      Object.values(statusMap).forEach((s) => {
-        if (s.kind === "ready") URL.revokeObjectURL(s.blobUrl);
-      });
+      // URL是直接图片URL，无需释放
       setProject(p);
       setStatusMap({});
       setRunning(false);
@@ -408,13 +401,14 @@ function StoryboardCard({
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={status.blobUrl}
+              src={status.imageUrl}
               alt={shot.label}
               className="w-full h-full object-cover"
             />
             <a
-              href={status.blobUrl}
-              download={`yuntech-${shot.id}.jpg`}
+              href={status.imageUrl}
+              target="_blank"
+              rel="noopener noreferrer"
               className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100"
             >
               ↓ 保存

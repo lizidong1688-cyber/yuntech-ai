@@ -1,38 +1,150 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
-import { buildPreviewUrl, canPreview } from "@/lib/aiPreview";
-import type { StudioProject } from "@/lib/studio";
+import {
+  buildImagePrompt,
+  buildPreviewUrl,
+  canPreview,
+  imageQueue,
+} from "@/lib/aiPreview";
+import type { StudioProject, Shot } from "@/lib/studio";
 import { loadProjects, newProject } from "@/lib/studio";
+
+type ShotStatus =
+  | { kind: "idle" }
+  | { kind: "queued" }
+  | { kind: "loading" }
+  | { kind: "ready"; blobUrl: string }
+  | { kind: "error"; message: string };
 
 export default function StoryboardApp() {
   const [project, setProject] = useState<StudioProject | null>(null);
   const [allProjects, setAllProjects] = useState<StudioProject[]>([]);
-  const [triggeredAt, setTriggeredAt] = useState<number | null>(null);
+  const [statusMap, setStatusMap] = useState<Record<string, ShotStatus>>({});
+  const [running, setRunning] = useState(false);
+  const runIdRef = useRef<number>(0);
 
   useEffect(() => {
     const projects = loadProjects();
     setAllProjects(projects);
-    // 默认加载最新项目
     setProject(projects[0] || newProject());
   }, []);
 
-  const readyShots = useMemo(
-    () => (project?.shots.filter(canPreview) || []),
+  // 组件卸载时取消所有任务+释放blob
+  useEffect(() => {
+    return () => {
+      imageQueue.clear();
+      Object.values(statusMap).forEach((s) => {
+        if (s.kind === "ready") URL.revokeObjectURL(s.blobUrl);
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const readyShots = (project?.shots.filter(canPreview) || []);
+  const completed = Object.values(statusMap).filter(
+    (s) => s.kind === "ready"
+  ).length;
+  const errored = Object.values(statusMap).filter(
+    (s) => s.kind === "error"
+  ).length;
+
+  const generateAll = useCallback(async () => {
+    if (!project) return;
+    const shots = project.shots.filter(canPreview);
+    if (shots.length === 0) return;
+
+    // 释放旧blob
+    Object.values(statusMap).forEach((s) => {
+      if (s.kind === "ready") URL.revokeObjectURL(s.blobUrl);
+    });
+
+    const thisRunId = Date.now();
+    runIdRef.current = thisRunId;
+
+    // 全部标记为queued
+    const initial: Record<string, ShotStatus> = {};
+    shots.forEach((s) => {
+      initial[s.id] = { kind: "queued" };
+    });
+    setStatusMap(initial);
+    setRunning(true);
+
+    // 逐个入队处理
+    for (const shot of shots) {
+      if (runIdRef.current !== thisRunId) break; // 被取消
+      // 当轮到这个镜头时，状态变 loading
+      setStatusMap((prev) => ({
+        ...prev,
+        [shot.id]: { kind: "loading" },
+      }));
+
+      const seed = Math.floor(Math.random() * 1_000_000);
+      const url = buildPreviewUrl(shot, project, { seed });
+
+      try {
+        const blobUrl = await imageQueue.enqueue(shot.id, url);
+        if (runIdRef.current !== thisRunId) break;
+        setStatusMap((prev) => ({
+          ...prev,
+          [shot.id]: { kind: "ready", blobUrl },
+        }));
+      } catch (err) {
+        if (runIdRef.current !== thisRunId) break;
+        const msg = (err as Error).message || "生成失败";
+        if (msg === "cancelled" || msg === "cleared") continue;
+        setStatusMap((prev) => ({
+          ...prev,
+          [shot.id]: { kind: "error", message: msg },
+        }));
+      }
+    }
+
+    setRunning(false);
+  }, [project, statusMap]);
+
+  const retryShot = useCallback(
+    async (shot: Shot) => {
+      if (!project) return;
+      setStatusMap((prev) => ({
+        ...prev,
+        [shot.id]: { kind: "queued" },
+      }));
+      const seed = Math.floor(Math.random() * 1_000_000);
+      const url = buildPreviewUrl(shot, project, { seed });
+      try {
+        const blobUrl = await imageQueue.enqueue(shot.id, url);
+        setStatusMap((prev) => ({
+          ...prev,
+          [shot.id]: { kind: "ready", blobUrl },
+        }));
+      } catch (err) {
+        const msg = (err as Error).message || "生成失败";
+        if (msg === "cancelled" || msg === "cleared") return;
+        setStatusMap((prev) => ({
+          ...prev,
+          [shot.id]: { kind: "error", message: msg },
+        }));
+      }
+    },
     [project]
   );
-
-  function handleGenerate() {
-    setTriggeredAt(Date.now());
-  }
 
   function handleProjectChange(id: string) {
     const p = allProjects.find((pr) => pr.id === id);
     if (p) {
+      // 停止当前运行
+      runIdRef.current = 0;
+      imageQueue.clear();
+      // 释放blob
+      Object.values(statusMap).forEach((s) => {
+        if (s.kind === "ready") URL.revokeObjectURL(s.blobUrl);
+      });
       setProject(p);
-      setTriggeredAt(null); // 切换项目清空预览
+      setStatusMap({});
+      setRunning(false);
     }
   }
 
@@ -41,13 +153,13 @@ export default function StoryboardApp() {
       <>
         <Navbar />
         <main className="pt-20 min-h-screen flex items-center justify-center">
-          <div className="text-center">
-            <p className="text-gray-400 mb-4">加载中...</p>
-          </div>
+          <p className="text-gray-400">加载中...</p>
         </main>
       </>
     );
   }
+
+  const hasStarted = Object.keys(statusMap).length > 0;
 
   return (
     <>
@@ -86,23 +198,24 @@ export default function StoryboardApp() {
             </div>
           </div>
 
-          {/* 未触发时的提示框 */}
-          {!triggeredAt && (
+          {/* 未触发时的引导 */}
+          {!hasStarted && (
             <div className="p-8 rounded-2xl bg-gradient-to-br from-accent/10 via-purple-500/10 to-surface border border-accent/30 text-center mb-6">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-xs text-white/90 mb-3">
                 ⚡ 真实AI生成 · 永久免费
               </div>
               <h2 className="text-2xl sm:text-3xl font-bold mb-3">
-                一键生成 {readyShots.length} 张AI分镜图
+                逐一生成 {readyShots.length} 张AI分镜图
               </h2>
-              <p className="text-gray-300 mb-6 max-w-xl mx-auto">
-                传统分镜师画一套完整分镜需要3天+¥2000-5000
-                <br />
-                我们 <strong className="text-white">30秒 · ¥0</strong>
+              <p className="text-gray-300 mb-2 max-w-xl mx-auto">
+                传统分镜师3天+¥2000-5000
+              </p>
+              <p className="text-gray-400 text-sm mb-6 max-w-xl mx-auto">
+                免费AI服务有限流，系统会<strong className="text-white">逐一生成</strong>每张约5-15秒，请耐心等待
               </p>
               <button
                 type="button"
-                onClick={handleGenerate}
+                onClick={generateAll}
                 disabled={readyShots.length === 0}
                 className="px-10 py-4 rounded-xl bg-white text-background font-bold text-lg hover:bg-gray-100 disabled:opacity-40 transition-colors shadow-lg"
               >
@@ -120,26 +233,69 @@ export default function StoryboardApp() {
             </div>
           )}
 
-          {/* 分镜网格 */}
-          {triggeredAt && (
-            <>
-              <div className="flex items-center justify-between mb-4">
-                <div className="text-sm text-gray-400">
-                  生成完成 · 点击图片可下载 · 每张独立AI生成
+          {/* 进度条 */}
+          {hasStarted && (
+            <div className="mb-5 p-4 rounded-xl bg-surface border border-border/50">
+              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                <div className="text-sm text-gray-300">
+                  进度：<strong className="text-white">{completed}</strong> /{" "}
+                  {readyShots.length}
+                  {errored > 0 && (
+                    <span className="text-red-300 ml-2">
+                      · {errored} 张失败
+                    </span>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setTriggeredAt(Date.now())}
-                  className="text-sm text-accent-light hover:text-white transition-colors"
-                >
-                  🔄 全部重新生成
-                </button>
+                <div className="flex items-center gap-2">
+                  {!running && (
+                    <button
+                      type="button"
+                      onClick={generateAll}
+                      className="text-sm text-accent-light hover:text-white transition-colors"
+                    >
+                      🔄 全部重新生成
+                    </button>
+                  )}
+                  {running && (
+                    <span className="text-xs text-accent-light flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-accent-light animate-pulse" />
+                      生成中...
+                    </span>
+                  )}
+                </div>
               </div>
-              <StoryboardGrid
-                project={project}
-                key={triggeredAt}
-              />
-            </>
+              <div className="w-full h-2 rounded-full bg-surface-light overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-500"
+                  style={{
+                    width: `${
+                      readyShots.length > 0
+                        ? (completed / readyShots.length) * 100
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* 分镜网格 */}
+          {hasStarted && (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {readyShots.map((shot, idx) => {
+                const status = statusMap[shot.id] || { kind: "idle" };
+                return (
+                  <StoryboardCard
+                    key={shot.id}
+                    shot={shot}
+                    index={idx}
+                    project={project}
+                    status={status}
+                    onRetry={() => retryShot(shot)}
+                  />
+                );
+              })}
+            </div>
           )}
 
           {/* 引流CTA */}
@@ -147,10 +303,10 @@ export default function StoryboardApp() {
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div>
                 <h3 className="font-semibold text-white mb-1">
-                  喜欢这个分镜？真实商业项目用Pro版提示词更稳定
+                  免费AI有限流，想要稳定的商业级生产？
                 </h3>
                 <p className="text-sm text-gray-400">
-                  3072条商业验证过的提示词 + ComfyUI批量工作流
+                  Pro版含3072条商业验证提示词 + ComfyUI本地批量工作流（无限流）
                 </p>
               </div>
               <Link
@@ -167,97 +323,116 @@ export default function StoryboardApp() {
   );
 }
 
-function StoryboardGrid({ project }: { project: StudioProject }) {
-  const readyShots = project.shots.filter(canPreview);
+function StoryboardCard({
+  shot,
+  index,
+  project,
+  status,
+  onRetry,
+}: {
+  shot: Shot;
+  index: number;
+  project: StudioProject;
+  status: ShotStatus;
+  onRetry: () => void;
+}) {
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+
+  const aspectStyle = {
+    aspectRatio:
+      project.aspectRatio === "9:16"
+        ? "9 / 16"
+        : project.aspectRatio === "1:1"
+          ? "1 / 1"
+          : project.aspectRatio === "4:5"
+            ? "4 / 5"
+            : project.aspectRatio === "2.35:1"
+              ? "2.35 / 1"
+              : "16 / 9",
+  };
+
+  function copyPrompt() {
+    navigator.clipboard.writeText(buildImagePrompt(shot, project));
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 2000);
+  }
 
   return (
-    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {readyShots.map((shot, idx) => {
-        const url = buildPreviewUrl(shot, project, {
-          seed: Math.floor(Math.random() * 1000000),
-        });
-        return (
-          <figure
-            key={shot.id}
-            className="rounded-xl overflow-hidden bg-surface border border-border/50 group"
-          >
-            <div
-              className="relative bg-surface-light overflow-hidden"
-              style={{
-                aspectRatio:
-                  project.aspectRatio === "9:16"
-                    ? "9 / 16"
-                    : project.aspectRatio === "1:1"
-                      ? "1 / 1"
-                      : project.aspectRatio === "4:5"
-                        ? "4 / 5"
-                        : project.aspectRatio === "2.35:1"
-                          ? "2.35 / 1"
-                          : "16 / 9",
-              }}
-            >
-              <LazyImage url={url} alt={shot.label} />
-              <div className="absolute top-2 left-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white">
-                镜头 {String(idx + 1).padStart(2, "0")} · {shot.duration}s
-              </div>
-              <a
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100"
-              >
-                ↓ 下载原图
-              </a>
-            </div>
-            <figcaption className="p-3">
-              <div className="text-sm font-medium text-white mb-1">
-                {shot.label}
-              </div>
-              <div className="text-xs text-gray-400 line-clamp-2">
-                {shot.subject}
-                {shot.action ? ` · ${shot.action}` : ""}
-              </div>
-              <div className="flex items-center gap-2 mt-2 text-[10px] text-gray-500">
-                <span>{shot.emotion || "—"}</span>
-              </div>
-            </figcaption>
-          </figure>
-        );
-      })}
-    </div>
-  );
-}
-
-function LazyImage({ url, alt }: { url: string; alt: string }) {
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState(false);
-
-  return (
-    <>
-      {!loaded && !error && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-2">
-            <div className="w-8 h-8 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
-            <span className="text-[10px] text-gray-400">AI生成中...</span>
+    <figure className="rounded-xl overflow-hidden bg-surface border border-border/50 group">
+      <div
+        className="relative bg-surface-light overflow-hidden flex items-center justify-center"
+        style={aspectStyle}
+      >
+        {status.kind === "queued" && (
+          <div className="flex flex-col items-center gap-2 p-4 text-center">
+            <span className="text-2xl">⏳</span>
+            <span className="text-xs text-gray-400">排队中</span>
           </div>
+        )}
+
+        {status.kind === "loading" && (
+          <div className="flex flex-col items-center gap-2 p-4 text-center">
+            <div className="w-8 h-8 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
+            <span className="text-xs text-gray-300 font-medium">AI绘制中</span>
+            <span className="text-[10px] text-gray-500">约 5-15 秒</span>
+          </div>
+        )}
+
+        {status.kind === "error" && (
+          <div className="flex flex-col items-center gap-2 p-4 text-center max-w-full">
+            <span className="text-2xl">⚠️</span>
+            <span className="text-xs text-red-300 font-medium">生成失败</span>
+            <span className="text-[10px] text-gray-400 line-clamp-2">
+              {status.message}
+            </span>
+            <div className="flex gap-1 mt-1">
+              <button
+                type="button"
+                onClick={onRetry}
+                className="px-2 py-1 text-[10px] rounded bg-accent/20 hover:bg-accent/30 text-accent-light transition-colors"
+              >
+                重试
+              </button>
+              <button
+                type="button"
+                onClick={copyPrompt}
+                className="px-2 py-1 text-[10px] rounded bg-surface-light hover:bg-border text-gray-300 transition-colors"
+              >
+                {copiedPrompt ? "✓" : "复制Prompt"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {status.kind === "ready" && (
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={status.blobUrl}
+              alt={shot.label}
+              className="w-full h-full object-cover"
+            />
+            <a
+              href={status.blobUrl}
+              download={`yuntech-${shot.id}.jpg`}
+              className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100"
+            >
+              ↓ 保存
+            </a>
+          </>
+        )}
+
+        <div className="absolute top-2 left-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white">
+          镜头 {String(index + 1).padStart(2, "0")} · {shot.duration}s
         </div>
-      )}
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-500">
-          生成失败，请重试
+      </div>
+      <figcaption className="p-3">
+        <div className="text-sm font-medium text-white mb-1">{shot.label}</div>
+        <div className="text-xs text-gray-400 line-clamp-2">
+          {shot.subject}
+          {shot.action ? ` · ${shot.action}` : ""}
         </div>
-      )}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={url}
-        alt={alt}
-        className={`w-full h-full object-cover transition-opacity duration-500 ${
-          loaded ? "opacity-100" : "opacity-0"
-        }`}
-        loading="lazy"
-        onLoad={() => setLoaded(true)}
-        onError={() => setError(true)}
-      />
-    </>
+      </figcaption>
+    </figure>
   );
 }

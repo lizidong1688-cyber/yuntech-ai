@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   Shot,
   ShotSize,
@@ -8,7 +8,12 @@ import type {
   StudioProject,
 } from "@/lib/studio";
 import { SHOT_SIZE_META, CAMERA_MOVE_META } from "@/lib/studio";
-import { buildPreviewUrl, canPreview } from "@/lib/aiPreview";
+import {
+  buildPreviewUrl,
+  canPreview,
+  imageQueue,
+  buildImagePrompt,
+} from "@/lib/aiPreview";
 
 interface Props {
   shot: Shot;
@@ -22,6 +27,13 @@ interface Props {
   canMoveDown: boolean;
 }
 
+type PreviewState =
+  | { kind: "idle" }
+  | { kind: "queued" }
+  | { kind: "loading" }
+  | { kind: "ready"; blobUrl: string }
+  | { kind: "error"; message: string };
+
 export default function ShotEditor({
   shot,
   index,
@@ -33,25 +45,64 @@ export default function ShotEditor({
   canMoveUp,
   canMoveDown,
 }: Props) {
-  const [previewToken, setPreviewToken] = useState(0); // 点击"重新生成"递增
-  const [showPreview, setShowPreview] = useState(false);
-  const [imgLoading, setImgLoading] = useState(false);
+  const [preview, setPreview] = useState<PreviewState>({ kind: "idle" });
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+
+  const ready = canPreview(shot);
+
+  // 取消正在进行的任务
+  useEffect(() => {
+    return () => {
+      imageQueue.cancel(shot.id);
+      if (preview.kind === "ready") {
+        URL.revokeObjectURL(preview.blobUrl);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function update<K extends keyof Shot>(key: K, value: Shot[K]) {
     onChange({ ...shot, [key]: value });
   }
 
-  const ready = canPreview(shot);
-  const previewUrl = ready
-    ? buildPreviewUrl(shot, project, { seed: previewToken })
-    : "";
-
-  function handleGenerate() {
+  const generate = useCallback(async () => {
     if (!ready) return;
-    setShowPreview(true);
-    setImgLoading(true);
-    // 强制刷新（换seed）
-    setPreviewToken((t) => t + Date.now() % 1000);
+    // 释放旧blob
+    if (preview.kind === "ready") {
+      URL.revokeObjectURL(preview.blobUrl);
+    }
+    // 先入队
+    setPreview({ kind: "queued" });
+    const seed = Math.floor(Math.random() * 1_000_000);
+    const url = buildPreviewUrl(shot, project, { seed });
+    try {
+      // 进入队列，队列开始处理时状态转 loading
+      const start = Date.now();
+      const blobUrl = await imageQueue.enqueue(shot.id, url);
+      // 如果取到结果用时很短，说明已经是loading了；无关紧要
+      void start;
+      setPreview({ kind: "ready", blobUrl });
+    } catch (err) {
+      const msg = (err as Error).message || "生成失败";
+      if (msg === "cancelled" || msg === "cleared") return;
+      setPreview({ kind: "error", message: msg });
+    }
+  }, [ready, shot, project, preview]);
+
+  // 订阅队列状态，更新 loading 态
+  useEffect(() => {
+    const unsub = imageQueue.onStatusChange((status) => {
+      if (status.nextId === shot.id && status.running && preview.kind === "queued") {
+        setPreview({ kind: "loading" });
+      }
+    });
+    return unsub;
+  }, [shot.id, preview.kind]);
+
+  function copyPrompt() {
+    navigator.clipboard.writeText(buildImagePrompt(shot, project));
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 2000);
   }
 
   return (
@@ -101,7 +152,6 @@ export default function ShotEditor({
       <div className="grid lg:grid-cols-[1fr_280px] gap-4">
         {/* 左：表单 */}
         <div>
-          {/* 景别 + 运镜 + 时长 */}
           <div className="grid grid-cols-3 gap-2 mb-3">
             <div>
               <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">
@@ -153,7 +203,6 @@ export default function ShotEditor({
             </div>
           </div>
 
-          {/* 内容字段 */}
           <div className="space-y-2">
             <Field
               label="主体"
@@ -188,11 +237,10 @@ export default function ShotEditor({
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">
               AI预览
             </span>
-            {showPreview && (
+            {preview.kind === "ready" && (
               <button
                 type="button"
-                onClick={handleGenerate}
-                disabled={!ready}
+                onClick={generate}
                 className="text-[10px] text-accent-light hover:text-white transition-colors"
               >
                 🎲 换一张
@@ -200,65 +248,131 @@ export default function ShotEditor({
             )}
           </div>
 
-          {!showPreview ? (
+          <PreviewBox
+            state={preview}
+            ready={ready}
+            onGenerate={generate}
+          />
+
+          {/* 失败降级：复制prompt手动用 */}
+          {preview.kind === "error" && (
             <button
               type="button"
-              onClick={handleGenerate}
-              disabled={!ready}
-              className="w-full aspect-square rounded-lg bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-2 border-dashed border-border/50 hover:border-accent/50 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex flex-col items-center justify-center gap-2 group"
+              onClick={copyPrompt}
+              className="w-full py-2 text-[11px] rounded-md bg-surface-light hover:bg-border text-gray-300 transition-colors"
             >
-              <svg
-                className="w-8 h-8 text-accent-light group-hover:scale-110 transition-transform"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.5}
-                  d="M13 10V3L4 14h7v7l9-11h-7z"
-                />
-              </svg>
-              <span className="text-xs text-gray-300 font-medium">
-                {ready ? "生成AI预览" : "先填写主体或动作"}
-              </span>
-              <span className="text-[10px] text-gray-500">
-                {ready ? "约 2-3 秒" : ""}
-              </span>
+              {copiedPrompt
+                ? "✓ 已复制英文Prompt"
+                : "📋 复制Prompt去其他平台"}
             </button>
-          ) : (
-            <div className="relative aspect-square rounded-lg overflow-hidden bg-surface-light border border-border/50">
-              {imgLoading && (
-                <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="w-6 h-6 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
-                    <span className="text-[10px] text-gray-400">AI生成中...</span>
-                  </div>
-                </div>
-              )}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                key={previewUrl}
-                src={previewUrl}
-                alt={shot.label}
-                className="w-full h-full object-cover"
-                onLoad={() => setImgLoading(false)}
-                onError={() => setImgLoading(false)}
-              />
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                download={`${shot.label}.jpg`}
-                className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white hover:bg-black/80 transition-colors"
-              >
-                ↓ 保存
-              </a>
-            </div>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function PreviewBox({
+  state,
+  ready,
+  onGenerate,
+}: {
+  state: PreviewState;
+  ready: boolean;
+  onGenerate: () => void;
+}) {
+  if (state.kind === "idle") {
+    return (
+      <button
+        type="button"
+        onClick={onGenerate}
+        disabled={!ready}
+        className="w-full aspect-square rounded-lg bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-2 border-dashed border-border/50 hover:border-accent/50 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex flex-col items-center justify-center gap-2 group"
+      >
+        <svg
+          className="w-8 h-8 text-accent-light group-hover:scale-110 transition-transform"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={1.5}
+            d="M13 10V3L4 14h7v7l9-11h-7z"
+          />
+        </svg>
+        <span className="text-xs text-gray-300 font-medium">
+          {ready ? "生成AI预览" : "先填写主体或动作"}
+        </span>
+        <span className="text-[10px] text-gray-500">
+          {ready ? "约 3-10 秒" : ""}
+        </span>
+      </button>
+    );
+  }
+
+  if (state.kind === "queued" || state.kind === "loading") {
+    return (
+      <div className="w-full aspect-square rounded-lg bg-surface-light border border-border/50 flex flex-col items-center justify-center gap-2">
+        <div className="w-8 h-8 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
+        <span className="text-[11px] text-gray-400">
+          {state.kind === "queued" ? "⏳ 排队中..." : "🎨 AI绘制中..."}
+        </span>
+        <span className="text-[10px] text-gray-500">
+          {state.kind === "queued" ? "前面有其他镜头" : "最多等40秒"}
+        </span>
+      </div>
+    );
+  }
+
+  if (state.kind === "error") {
+    return (
+      <div className="w-full aspect-square rounded-lg bg-red-500/5 border-2 border-red-500/30 flex flex-col items-center justify-center gap-2 p-3 text-center">
+        <svg
+          className="w-8 h-8 text-red-400"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={1.5}
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+          />
+        </svg>
+        <span className="text-[11px] text-red-300 font-medium">生成失败</span>
+        <span className="text-[10px] text-gray-400 leading-tight">
+          {state.message}
+        </span>
+        <button
+          type="button"
+          onClick={onGenerate}
+          className="mt-1 px-3 py-1 text-[10px] rounded-md bg-accent/20 hover:bg-accent/30 text-accent-light transition-colors"
+        >
+          重试
+        </button>
+      </div>
+    );
+  }
+
+  // ready
+  return (
+    <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-surface-light border border-border/50 group">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={state.blobUrl}
+        alt="AI预览"
+        className="w-full h-full object-cover"
+      />
+      <a
+        href={state.blobUrl}
+        download="yuntech-ai-preview.jpg"
+        className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur text-[10px] text-white hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100"
+      >
+        ↓ 保存
+      </a>
     </div>
   );
 }

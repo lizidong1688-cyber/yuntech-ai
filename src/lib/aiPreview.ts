@@ -2,18 +2,11 @@
  * AI图像预览引擎
  *
  * 使用 Pollinations.ai 免费公益服务生成图像
- * - 零API成本
- * - 无需Key
- * - 支持seed保证重现性
- * - 可直接 <img src> 引用
+ * 关键约束：匿名用户每个IP同时最多1个请求排队（maxAllowed=1）
+ * 因此必须串行化所有请求
  */
 
-import type {
-  Shot,
-  StudioProject,
-  ColorPalette,
-  LightSetup,
-} from "./studio";
+import type { Shot, StudioProject } from "./studio";
 import { PALETTE_META, LIGHT_META, SHOT_SIZE_META, CAMERA_MOVE_META } from "./studio";
 
 const POLLINATIONS_BASE = "https://image.pollinations.ai/prompt";
@@ -41,7 +34,6 @@ export function getSizeForAspect(aspect: string): PreviewSize {
 
 /**
  * 构建英文Prompt用于AI图像生成
- * （Pollinations对英文响应更好）
  */
 export function buildImagePrompt(
   shot: Shot,
@@ -49,15 +41,12 @@ export function buildImagePrompt(
 ): string {
   const parts: string[] = [];
 
-  // 1. 景别（先说镜头类型）
   parts.push(SHOT_SIZE_META[shot.size].prompt);
 
-  // 2. 运镜提示（帮助AI理解构图）
   if (shot.move !== "static") {
     parts.push(`captured with ${CAMERA_MOVE_META[shot.move].prompt}`);
   }
 
-  // 3. 主体+动作（核心内容）
   if (shot.subject) {
     const subjectLine = shot.action
       ? `${shot.subject} ${shot.action}`
@@ -65,28 +54,21 @@ export function buildImagePrompt(
     parts.push(`of ${subjectLine}`);
   }
 
-  // 4. 环境
   if (shot.environment) {
     parts.push(`in ${shot.environment}`);
   }
 
-  // 5. 光线
   parts.push(LIGHT_META[project.lighting].prompt);
-
-  // 6. 色彩
   parts.push(PALETTE_META[project.palette].prompt);
 
-  // 7. 风格（来自用户自由输入）
   if (project.styleDirection) {
     parts.push(`${project.styleDirection} style`);
   }
 
-  // 8. 情绪
   if (shot.emotion) {
     parts.push(`mood: ${shot.emotion}`);
   }
 
-  // 9. 质量锚点
   parts.push(
     "cinematic, professional photography, high detail, 8k, sharp focus"
   );
@@ -94,12 +76,6 @@ export function buildImagePrompt(
   return parts.join(", ");
 }
 
-/**
- * 生成预览图URL（可直接用于<img src>）
- *
- * seed 基于shot ID保证同一镜头刷新仍是同一张图
- * 修改prompt会自动变化图（因为URL变了）
- */
 export function buildPreviewUrl(
   shot: Shot,
   project: StudioProject,
@@ -116,7 +92,6 @@ export function buildPreviewUrl(
       ? { width: options.width, height: options.height }
       : getSizeForAspect(project.aspectRatio);
 
-  // 基于shot ID生成稳定seed
   const seed =
     options?.seed ??
     Math.abs(
@@ -137,9 +112,141 @@ export function buildPreviewUrl(
   return `${POLLINATIONS_BASE}/${encodeURIComponent(prompt)}?${params}`;
 }
 
-/**
- * 判断镜头是否足够完整可以生成预览
- */
 export function canPreview(shot: Shot): boolean {
   return Boolean(shot.subject?.trim()) || Boolean(shot.action?.trim()) || Boolean(shot.environment?.trim());
+}
+
+// ============================================================
+// 🔑 串行队列（核心）—— 解决 Pollinations IP限流问题
+// ============================================================
+
+type QueueTask = {
+  id: string;
+  url: string;
+  resolve: (blobUrl: string) => void;
+  reject: (error: Error) => void;
+};
+
+class ImageQueue {
+  private queue: QueueTask[] = [];
+  private running = false;
+  private listeners: Set<(status: QueueStatus) => void> = new Set();
+
+  async enqueue(id: string, url: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ id, url, resolve, reject });
+      this.notify();
+      if (!this.running) this.process();
+    });
+  }
+
+  cancel(id: string) {
+    this.queue = this.queue.filter((t) => {
+      if (t.id === id) {
+        t.reject(new Error("cancelled"));
+        return false;
+      }
+      return true;
+    });
+    this.notify();
+  }
+
+  clear() {
+    this.queue.forEach((t) => t.reject(new Error("cleared")));
+    this.queue = [];
+    this.notify();
+  }
+
+  onStatusChange(cb: (status: QueueStatus) => void): () => void {
+    this.listeners.add(cb);
+    cb(this.getStatus());
+    return () => {
+      this.listeners.delete(cb);
+    };
+  }
+
+  getStatus(): QueueStatus {
+    return {
+      pending: this.queue.length,
+      running: this.running,
+      nextId: this.queue[0]?.id,
+    };
+  }
+
+  private notify() {
+    const status = this.getStatus();
+    this.listeners.forEach((cb) => cb(status));
+  }
+
+  private async process() {
+    this.running = true;
+    this.notify();
+
+    while (this.queue.length > 0) {
+      const task = this.queue[0];
+      try {
+        const blobUrl = await fetchWithRetry(task.url);
+        task.resolve(blobUrl);
+      } catch (err) {
+        task.reject(err as Error);
+      }
+      this.queue.shift();
+      this.notify();
+      // 两个请求之间强制间隔 500ms，更稳
+      if (this.queue.length > 0) {
+        await sleep(500);
+      }
+    }
+
+    this.running = false;
+    this.notify();
+  }
+}
+
+export interface QueueStatus {
+  pending: number;
+  running: boolean;
+  nextId?: string;
+}
+
+export const imageQueue = new ImageQueue();
+
+async function fetchWithRetry(
+  url: string,
+  attempts = 3
+): Promise<string> {
+  let lastErr: Error | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 40_000);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal, cache: "default" });
+        if (res.status === 200) {
+          const blob = await res.blob();
+          if (blob.size > 5000 && blob.type.startsWith("image/")) {
+            return URL.createObjectURL(blob);
+          }
+          throw new Error(`response不是图片: type=${blob.type}, size=${blob.size}`);
+        }
+        if (res.status === 429) {
+          throw new Error("AI服务繁忙（429）");
+        }
+        throw new Error(`HTTP ${res.status}`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      lastErr = err as Error;
+      // 每次失败等更久
+      if (i < attempts - 1) {
+        await sleep(1500 * (i + 1));
+      }
+    }
+  }
+  throw lastErr || new Error("生成失败");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }

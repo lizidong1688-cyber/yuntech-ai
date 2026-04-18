@@ -10,7 +10,12 @@ import type { Shot, StudioProject } from "./studio";
 import { PALETTE_META, LIGHT_META, SHOT_SIZE_META, CAMERA_MOVE_META } from "./studio";
 
 // 通过自家代理调用（绕过Pollinations对浏览器的限流）
-const PROXY_BASE = "/api/ai-image";
+// 开发环境强制指向生产（本地dev出口IP会被Pollinations直连限流）
+const PROXY_BASE =
+  typeof window !== "undefined" &&
+  window.location.hostname === "localhost"
+    ? "https://yuntech-ai.vercel.app/api/ai-image"
+    : "/api/ai-image";
 
 export interface PreviewSize {
   width: number;

@@ -1,9 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["hkg1", "sin1", "hnd1"],
-  "images": {
-    "minimumCacheTTL": 86400
-  },
   "headers": [
     {
       "source": "/_next/static/:path*",

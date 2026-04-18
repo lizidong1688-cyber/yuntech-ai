@@ -68,6 +68,7 @@ export default function Footer() {
                 { label: "关于我们", href: "#about" },
                 { label: "联系我们", href: "#contact" },
                 { label: "价格方案", href: "#pricing" },
+                { label: "🇨🇳 国内访问慢？", href: "/help/china" },
               ].map((item) => (
                 <li key={item.label}>
                   <a

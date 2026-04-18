@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["hkg1", "sin1", "hnd1"],
+  "images": {
+    "minimumCacheTTL": 86400
+  },
+  "headers": [
+    {
+      "source": "/_next/static/:path*",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/api/ai-image",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, s-maxage=604800"
+        },
+        {
+          "key": "CDN-Cache-Control",
+          "value": "max-age=2592000"
+        }
+      ]
+    }
+  ]
+}
